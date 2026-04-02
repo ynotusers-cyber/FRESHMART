@@ -1,0 +1,7 @@
+{
+  "name": "FreshMartFinal",
+  "displayName": "FreshMart",
+  "android": {
+    "package": "com.ynotusers.freshmartfinal"
+  }
+}
