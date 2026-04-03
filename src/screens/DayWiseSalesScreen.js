@@ -1,4 +1,6 @@
 // src/screens/DayWiseSalesScreen.js
+// Day Wise Sales — Auto-generates year buttons dynamically every year
+
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
@@ -11,34 +13,131 @@ const { width } = Dimensions.get('window');
 const CCODE = 1;
 
 const DAY_COLORS = {
-  Mon: '#FF6384', Tue: '#36A2EB', Wed: '#FFCE56',
-  Thu: '#4BC0C0', Fri: '#9966FF', Sat: '#FF9F40', Sun: '#C9CBCF',
+  Mon: '#FF6384',
+  Tue: '#36A2EB',
+  Wed: '#FFCE56',
+  Thu: '#4BC0C0',
+  Fri: '#9966FF',
+  Sat: '#FF9F40',
+  Sun: '#C9CBCF',
 };
+
+const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const fmt = (v) => {
-  if (v >= 1_000_000) return `RM ${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000)     return `RM ${(v / 1_000).toFixed(1)}K`;
-  return `RM ${Number(v).toFixed(0)}`;
+  const n = parseFloat(v) || 0;
+  if (n >= 1_000_000) return `RM ${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000)     return `RM ${(n / 1_000).toFixed(1)}K`;
+  return `RM ${n.toFixed(0)}`;
 };
 
+// ─── Auto-generate year ranges from 2023 to current year + "All" ─────────────
+const generateRanges = () => {
+  const currentYear = new Date().getFullYear();
+  const startYear   = 2023;
+  const ranges = [];
+
+  for (let yr = startYear; yr <= currentYear; yr++) {
+    ranges.push({
+      label: `${yr}`,
+      from:  `${yr}-01-01`,
+      to:    `${yr}-12-31`,
+    });
+  }
+
+  // Add "All" at the end
+  ranges.push({
+    label: 'All',
+    from:  `${startYear}-01-01`,
+    to:    `${currentYear}-12-31`,
+  });
+
+  return ranges;
+};
+
+// ─── Donut Chart ──────────────────────────────────────────────────────────────
+function DonutChart({ data, total }) {
+  const SIZE      = width * 0.58;
+  const THICKNESS = SIZE * 0.18;
+
+  if (!data || data.length === 0 || total === 0) return null;
+
+  let cumulative = 0;
+  const segments = data.map((row) => {
+    const amt = parseFloat(row.amt) || 0;
+    const pct = (amt / total) * 100;
+    const seg = { ...row, pct, cumulative, color: DAY_COLORS[row.theDay] || '#999' };
+    cumulative += pct;
+    return seg;
+  });
+
+  return (
+    <View style={{ alignItems: 'center', marginVertical: 20 }}>
+      <View style={[pie.donut, { width: SIZE, height: SIZE, borderRadius: SIZE / 2 }]}>
+        {segments.map((seg, i) => {
+          const rotate = (seg.cumulative / 100) * 360 - 90;
+          return (
+            <View
+              key={i}
+              style={[
+                pie.segment,
+                {
+                  width: SIZE,
+                  height: SIZE,
+                  borderRadius: SIZE / 2,
+                  borderWidth: THICKNESS,
+                  borderColor: 'transparent',
+                  borderTopColor: seg.color,
+                  transform: [{ rotate: `${rotate}deg` }],
+                  opacity: 0.92,
+                },
+              ]}
+            />
+          );
+        })}
+        <View style={[pie.center, {
+          width: SIZE - THICKNESS * 2.2,
+          height: SIZE - THICKNESS * 2.2,
+          borderRadius: (SIZE - THICKNESS * 2.2) / 2,
+        }]}>
+          <Text style={pie.centerLabel}>Total</Text>
+          <Text style={pie.centerVal}>{fmt(total)}</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const pie = StyleSheet.create({
+  donut:       { position: 'relative', alignItems: 'center', justifyContent: 'center', backgroundColor: '#E8ECF0' },
+  segment:     { position: 'absolute' },
+  center:      { position: 'absolute', backgroundColor: Colors.bgCard, alignItems: 'center', justifyContent: 'center' },
+  centerLabel: { fontSize: 11, color: Colors.textMuted, fontWeight: '600' },
+  centerVal:   { fontSize: 14, fontWeight: '900', color: Colors.textPrimary, marginTop: 2 },
+});
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function DayWiseSalesScreen({ navigation }) {
-  const [data, setData]       = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState(null);
+  // ── Auto-generate ranges every time screen loads ──────────────────────────
+  const RANGES = generateRanges();
 
-  // Default: current month
-  const now   = new Date();
-  const from  = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-  const to    = now.toISOString().split('T')[0];
+  // Default to current year
+  const currentYear    = new Date().getFullYear();
+  const defaultRange   = RANGES.find(r => r.label === `${currentYear}`) || RANGES[RANGES.length - 2];
 
-  const load = useCallback(async () => {
-    setLoading(true); setError(null);
+  const [data,      setData]      = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState(null);
+  const [activeRange, setActiveRange] = useState(defaultRange);
+
+  const load = useCallback(async (from, to) => {
+    setLoading(true); setError(null); setData([]);
     try {
       const rows = await fetchDayWiseSales(from, to, CCODE);
-      // Sort by day order
-      const order = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-      const sorted = [...rows].sort((a, b) =>
-        order.indexOf(a.theDay) - order.indexOf(b.theDay)
+      if (!Array.isArray(rows)) throw new Error('Invalid data from server');
+      if (rows.length === 0)    throw new Error('No data found for this period');
+      const sorted = [...rows].sort(
+        (a, b) => DAY_ORDER.indexOf(a.theDay) - DAY_ORDER.indexOf(b.theDay)
       );
       setData(sorted);
     } catch (e) {
@@ -48,73 +147,51 @@ export default function DayWiseSalesScreen({ navigation }) {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load(activeRange.from, activeRange.to);
+  }, []);
 
-  const total = data.reduce((s, r) => s + (parseFloat(r.amt) || 0), 0);
-
-  // Simple Pie using segments
-  const PieChart = () => {
-    if (!data.length) return null;
-    const size   = width * 0.55;
-    const cx     = size / 2;
-    const cy     = size / 2;
-    const radius = size / 2 - 10;
-    let startAngle = -Math.PI / 2;
-
-    const slices = data.map((row) => {
-      const val   = parseFloat(row.amt) || 0;
-      const angle = (val / total) * 2 * Math.PI;
-      const endAngle = startAngle + angle;
-      const x1 = cx + radius * Math.cos(startAngle);
-      const y1 = cy + radius * Math.sin(startAngle);
-      const x2 = cx + radius * Math.cos(endAngle);
-      const y2 = cy + radius * Math.sin(endAngle);
-      const largeArc = angle > Math.PI ? 1 : 0;
-      const path = `M ${cx} ${cy} L ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} Z`;
-      const midAngle = startAngle + angle / 2;
-      const labelX = cx + (radius * 0.65) * Math.cos(midAngle);
-      const labelY = cy + (radius * 0.65) * Math.sin(midAngle);
-      const color  = DAY_COLORS[row.theDay] || '#999';
-      startAngle   = endAngle;
-      return { ...row, path, color, labelX, labelY, pct: ((val / total) * 100).toFixed(1) };
-    });
-
-    return (
-      <View style={{ alignItems: 'center', marginVertical: 16 }}>
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-          {slices.map((sl, i) => (
-            <React.Fragment key={i}>
-              <path d={sl.path} fill={sl.color} stroke="#fff" strokeWidth="2" />
-              {parseFloat(sl.pct) > 5 && (
-                <text x={sl.labelX} y={sl.labelY} textAnchor="middle"
-                  fontSize="10" fill="#fff" fontWeight="bold">
-                  {sl.pct}%
-                </text>
-              )}
-            </React.Fragment>
-          ))}
-        </svg>
-      </View>
-    );
+  const handleRangePress = (range) => {
+    setActiveRange(range);
+    load(range.from, range.to);
   };
+
+  const total  = data.reduce((s, r) => s + (parseFloat(r.amt) || 0), 0);
+  const maxAmt = data.length ? Math.max(...data.map(r => parseFloat(r.amt) || 0)) : 1;
 
   return (
     <View style={s.root}>
       <StatusBar barStyle="light-content" backgroundColor={Colors.primaryDark} />
 
-      {/* Header */}
+      {/* ── Header ── */}
       <View style={[s.header, Shadow.header]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={s.backBtn}>
           <Text style={s.backText}>← Back</Text>
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={s.title}>Day Wise Sales</Text>
-          <Text style={s.subtitle}>This month breakdown by weekday</Text>
+          <Text style={s.subtitle}>Breakdown by weekday</Text>
         </View>
       </View>
 
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
 
+        {/* ── Dynamic Year Range Selector ── */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.rangeScroll}>
+          {RANGES.map((r) => (
+            <TouchableOpacity
+              key={r.label}
+              style={[s.rangeBtn, activeRange.label === r.label && s.rangeBtnActive]}
+              onPress={() => handleRangePress(r)}
+            >
+              <Text style={[s.rangeTxt, activeRange.label === r.label && s.rangeTxtActive]}>
+                {r.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
+        {/* ── Loading ── */}
         {loading && (
           <View style={s.center}>
             <ActivityIndicator size="large" color={Colors.primary} />
@@ -122,45 +199,62 @@ export default function DayWiseSalesScreen({ navigation }) {
           </View>
         )}
 
+        {/* ── Error ── */}
         {!loading && error && (
           <View style={s.errorBox}>
             <Text style={s.errorText}>⚠️ {error}</Text>
-            <TouchableOpacity onPress={load} style={s.retryBtn}>
+            <TouchableOpacity onPress={() => load(activeRange.from, activeRange.to)} style={s.retryBtn}>
               <Text style={s.retryText}>Retry</Text>
             </TouchableOpacity>
           </View>
         )}
 
+        {/* ── Data ── */}
         {!loading && !error && data.length > 0 && (
           <>
             {/* Total Card */}
             <View style={s.totalCard}>
-              <Text style={s.totalLabel}>Total Sales This Month</Text>
+              <Text style={s.totalLabel}>Total Sales · {activeRange.label}</Text>
               <Text style={s.totalValue}>{fmt(total)}</Text>
+              <Text style={s.totalSub}>Across {data.length} weekdays</Text>
             </View>
 
-            {/* Pie Chart */}
+            {/* Donut Chart */}
             <View style={s.chartCard}>
-              <Text style={s.chartTitle}>Sales Distribution by Day</Text>
-              <PieChart />
+              <Text style={s.chartTitle}>📊 Daywise Percentage</Text>
+              <DonutChart data={data} total={total} />
+
+              {/* Legend */}
+              <View style={s.legendWrap}>
+                {data.map((row, i) => {
+                  const amt   = parseFloat(row.amt) || 0;
+                  const pct   = total > 0 ? ((amt / total) * 100).toFixed(1) : '0';
+                  const color = DAY_COLORS[row.theDay] || '#999';
+                  return (
+                    <View key={i} style={s.legendItem}>
+                      <View style={[s.legendDot, { backgroundColor: color }]} />
+                      <Text style={s.legendDay}>{row.theDay}</Text>
+                      <Text style={s.legendPct}>{pct}%</Text>
+                    </View>
+                  );
+                })}
+              </View>
             </View>
 
-            {/* Legend + Details */}
-            <View style={s.legendCard}>
-              <Text style={s.chartTitle}>Breakdown</Text>
+            {/* Bar breakdown */}
+            <View style={s.barCard}>
+              <Text style={s.chartTitle}>💰 Sales by Day</Text>
               {data.map((row, i) => {
-                const amt = parseFloat(row.amt) || 0;
-                const pct = total > 0 ? ((amt / total) * 100).toFixed(1) : '0';
-                const barW = total > 0 ? (amt / total) * (width - 80) : 0;
+                const amt   = parseFloat(row.amt) || 0;
+                const pct   = total > 0 ? ((amt / total) * 100).toFixed(1) : '0';
+                const barW  = maxAmt > 0 ? (amt / maxAmt) * (width - 120) : 0;
+                const color = DAY_COLORS[row.theDay] || '#999';
                 return (
-                  <View key={i} style={s.legendRow}>
-                    <View style={[s.dot, { backgroundColor: DAY_COLORS[row.theDay] || '#999' }]} />
+                  <View key={i} style={s.barRow}>
+                    <View style={[s.dayDot, { backgroundColor: color }]} />
                     <Text style={s.dayLabel}>{row.theDay}</Text>
                     <View style={s.barBg}>
-                      <View style={[s.barFill, {
-                        width: barW,
-                        backgroundColor: DAY_COLORS[row.theDay] || '#999'
-                      }]} />
+                      <View style={[s.barFill, { width: barW, backgroundColor: color }]} />
                     </View>
                     <View style={s.amtWrap}>
                       <Text style={s.amtText}>{fmt(amt)}</Text>
@@ -170,77 +264,123 @@ export default function DayWiseSalesScreen({ navigation }) {
                 );
               })}
             </View>
+
+            {/* Summary Table */}
+            <View style={s.tableCard}>
+              <Text style={s.chartTitle}>📋 Summary</Text>
+              <View style={s.tableHead}>
+                <Text style={[s.thCell, { flex: 1 }]}>DAY</Text>
+                <Text style={[s.thCell, { flex: 2 }]}>AMOUNT</Text>
+                <Text style={[s.thCell, { flex: 1 }]}>SHARE</Text>
+              </View>
+              {data.map((row, i) => {
+                const amt   = parseFloat(row.amt) || 0;
+                const pct   = total > 0 ? ((amt / total) * 100).toFixed(1) : '0';
+                const color = DAY_COLORS[row.theDay] || '#999';
+                return (
+                  <View key={i} style={[s.tableRow, i % 2 === 1 && s.tableRowAlt]}>
+                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <View style={[s.dayDot, { backgroundColor: color }]} />
+                      <Text style={s.tdDay}>{row.theDay}</Text>
+                    </View>
+                    <Text style={[s.tdCell, { flex: 2, color, fontWeight: '800' }]}>{fmt(amt)}</Text>
+                    <Text style={[s.tdCell, { flex: 1 }]}>{pct}%</Text>
+                  </View>
+                );
+              })}
+            </View>
           </>
         )}
 
-        {!loading && !error && data.length === 0 && (
-          <View style={s.center}>
-            <Text style={{ fontSize: 40 }}>📭</Text>
-            <Text style={s.emptyText}>No sales data found</Text>
-          </View>
-        )}
-
-        <View style={{ height: 32 }} />
+        <View style={{ height: 40 }} />
       </ScrollView>
     </View>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
-  root:    { flex: 1, backgroundColor: Colors.bg },
-  header:  {
+  root:   { flex: 1, backgroundColor: Colors.bg },
+  header: {
     backgroundColor: Colors.primary,
     paddingTop: 52, paddingBottom: 16,
     paddingHorizontal: Spacing.lg,
     flexDirection: 'row', alignItems: 'flex-end', gap: 12,
   },
-  backBtn:   { paddingRight: 8, paddingBottom: 2 },
-  backText:  { color: '#fff', fontSize: 15, fontWeight: '700' },
-  title:     { color: '#fff', fontSize: 18, fontWeight: '800' },
-  subtitle:  { color: 'rgba(255,255,255,0.75)', fontSize: 11, marginTop: 2 },
-  scroll:    { padding: Spacing.md },
+  backBtn:  { paddingRight: 8, paddingBottom: 2 },
+  backText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  title:    { color: '#fff', fontSize: 18, fontWeight: '800' },
+  subtitle: { color: 'rgba(255,255,255,0.75)', fontSize: 11, marginTop: 2 },
+
+  scroll:      { padding: Spacing.md },
+  rangeScroll: { marginBottom: 14 },
+
+  // Range buttons — horizontal scroll so new years auto-fit
+  rangeBtn: {
+    paddingVertical: 8, paddingHorizontal: 18,
+    borderRadius: 20, marginRight: 8,
+    backgroundColor: Colors.bgCard,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  rangeBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  rangeTxt:       { fontSize: 13, fontWeight: '700', color: Colors.textMuted },
+  rangeTxtActive: { color: '#fff' },
+
   center:    { alignItems: 'center', paddingVertical: 60, gap: 12 },
   loadText:  { color: Colors.textMuted, fontSize: 14 },
-  emptyText: { color: Colors.textMuted, fontSize: 15, marginTop: 8 },
 
-  errorBox: {
-    backgroundColor: '#FFF0EE', borderRadius: Radius.md,
-    padding: Spacing.md, borderLeftWidth: 4,
-    borderLeftColor: Colors.danger, gap: 10,
-  },
+  // Error
+  errorBox:  { backgroundColor: '#FFF0EE', borderRadius: Radius.md, padding: Spacing.md, borderLeftWidth: 4, borderLeftColor: Colors.danger, gap: 10 },
   errorText: { color: Colors.danger, fontSize: 13, fontWeight: '600' },
   retryBtn:  { backgroundColor: Colors.danger, borderRadius: Radius.sm, paddingVertical: 8, paddingHorizontal: 16, alignSelf: 'flex-start' },
   retryText: { color: '#fff', fontWeight: '700', fontSize: 13 },
 
+  // Total card
   totalCard: {
-    backgroundColor: Colors.primary, borderRadius: Radius.md,
-    padding: Spacing.lg, alignItems: 'center', marginBottom: 12,
-    ...Shadow.card,
+    backgroundColor: Colors.primary, borderRadius: Radius.lg,
+    padding: Spacing.lg, alignItems: 'center', marginBottom: 12, ...Shadow.card,
   },
   totalLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: '600' },
-  totalValue: { color: '#fff', fontSize: 28, fontWeight: '900', marginTop: 4 },
+  totalValue: { color: '#fff', fontSize: 30, fontWeight: '900', marginTop: 4 },
+  totalSub:   { color: 'rgba(255,255,255,0.65)', fontSize: 11, marginTop: 4 },
 
+  // Chart card
   chartCard: {
-    backgroundColor: Colors.bgCard, borderRadius: Radius.md,
+    backgroundColor: Colors.bgCard, borderRadius: Radius.lg,
     padding: Spacing.md, marginBottom: 12,
     borderWidth: 1, borderColor: Colors.border,
-    alignItems: 'center',
-    ...Shadow.card,
+    alignItems: 'center', ...Shadow.card,
   },
-  chartTitle: { fontSize: 13, fontWeight: '800', color: Colors.textPrimary, marginBottom: 8 },
+  chartTitle: { fontSize: 14, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4, alignSelf: 'flex-start' },
 
-  legendCard: {
-    backgroundColor: Colors.bgCard, borderRadius: Radius.md,
+  // Legend
+  legendWrap: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 10, marginTop: 8 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  legendDot:  { width: 10, height: 10, borderRadius: 5 },
+  legendDay:  { fontSize: 12, fontWeight: '700', color: Colors.textPrimary },
+  legendPct:  { fontSize: 11, color: Colors.textMuted },
+
+  // Bar card
+  barCard: {
+    backgroundColor: Colors.bgCard, borderRadius: Radius.lg,
     padding: Spacing.md, marginBottom: 12,
-    borderWidth: 1, borderColor: Colors.border,
-    ...Shadow.card,
+    borderWidth: 1, borderColor: Colors.border, ...Shadow.card,
   },
-  legendRow:  { flexDirection: 'row', alignItems: 'center', marginVertical: 6, gap: 8 },
-  dot:        { width: 12, height: 12, borderRadius: 6 },
-  dayLabel:   { width: 32, fontSize: 13, fontWeight: '700', color: Colors.textPrimary },
-  barBg:      { flex: 1, height: 10, backgroundColor: Colors.border, borderRadius: 5, overflow: 'hidden' },
-  barFill:    { height: 10, borderRadius: 5 },
-  amtWrap:    { alignItems: 'flex-end', minWidth: 80 },
-  amtText:    { fontSize: 12, fontWeight: '700', color: Colors.textPrimary },
-  pctText:    { fontSize: 10, color: Colors.textMuted },
+  barRow:  { flexDirection: 'row', alignItems: 'center', marginVertical: 6, gap: 8 },
+  dayDot:  { width: 10, height: 10, borderRadius: 5 },
+  dayLabel:{ width: 30, fontSize: 13, fontWeight: '700', color: Colors.textPrimary },
+  barBg:   { flex: 1, height: 12, backgroundColor: Colors.border, borderRadius: 6, overflow: 'hidden' },
+  barFill: { height: 12, borderRadius: 6 },
+  amtWrap: { alignItems: 'flex-end', minWidth: 72 },
+  amtText: { fontSize: 12, fontWeight: '700', color: Colors.textPrimary },
+  pctText: { fontSize: 10, color: Colors.textMuted },
+
+  // Table
+  tableCard:    { backgroundColor: Colors.bgCard, borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: Colors.border, ...Shadow.card },
+  tableHead:    { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: Colors.border, marginBottom: 4 },
+  thCell:       { fontSize: 10, fontWeight: '800', color: Colors.textMuted, letterSpacing: 0.8 },
+  tableRow:     { flexDirection: 'row', paddingVertical: 10, alignItems: 'center' },
+  tableRowAlt:  { backgroundColor: Colors.divider, borderRadius: 6 },
+  tdDay:        { fontSize: 13, fontWeight: '700', color: Colors.textPrimary },
+  tdCell:       { fontSize: 13, color: Colors.textPrimary, textAlign: 'right' },
 });
